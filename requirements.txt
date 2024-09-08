@@ -2,3 +2,4 @@ aiohttp==3.9.3
 eth-account==0.8.0
 fake-useragent==1.4.0
 web3==6.19.0
+colorlog==6.8.2
