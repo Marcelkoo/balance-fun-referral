@@ -8,8 +8,22 @@ from aiohttp import ClientError
 from web3 import Web3
 from eth_account.messages import encode_defunct
 from fake_useragent import UserAgent
+import colorlog 
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+handler = colorlog.StreamHandler()
+handler.setFormatter(colorlog.ColoredFormatter(
+    '%(log_color)s%(asctime)s - %(levelname)s - %(message)s',  # лог с цветом
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'bold_red',
+    }
+))
+logger = colorlog.getLogger()
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 class WalletProcessor:
     def __init__(self, private_key, invite_code, proxy, delay_min, delay_max):
@@ -44,14 +58,30 @@ class WalletProcessor:
             'Connection': 'keep-alive',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Origin': 'https://balance.fun',
-            'Referer': 'https://balance.fun/account?invite_code=' + self.invite_code,
-            'User-Agent': self.user_agent  
+            'Referer': f'https://balance.fun/account?invite_code={self.invite_code}',
+            'User-Agent': self.user_agent,
+            'DNT': '1',  # Don't track
+            'Cache-Control': 'no-cache',
+            'Upgrade-Insecure-Requests': '1'
         }
         logging.info(f"Кошелек {self.wallet_address} отправляет запрос на {url}.")
         async with session.post(url, data=payload, headers=headers) as response:
+            logger.info(f"Статус ответа: {response.status}")
+            
+            # Логируем все заголовки ответа
+            logger.info(f"Заголовки ответа: {response.headers}")
+
+            # Проверяем статус ответа
             if response.status == 200:
                 data = await response.json()
                 logging.info(f"Кошелек {self.wallet_address} получил ответ: {data} на запрос {url}.")
+                
+                cookies = response.cookies
+                if cookies:
+                    logger.info(f"Получены cookies: {cookies}")
+                else:
+                    logger.warning(f"Cookies отсутствуют в ответе от {url}")                
+                
                 return data
             else:
                 logging.error(f"Ошибка {response.status}: Кошелек {self.wallet_address} не получил валидный ответ на запрос {url}.")
@@ -60,15 +90,16 @@ class WalletProcessor:
     async def process(self):
         message = "You hereby confirm that you are the owner of this connected wallet. This is a safe and gasless transaction to verify your ownership. Signing this message will not give Balance.fun permission to make transactions with your wallet."
         signature = self.create_signature(message)
-        
+
         proxy_url = self.parse_proxy() 
         logging.info(f"Начал работу с кошельком {self.wallet_address}. Прокси: {proxy_url}")
 
         try:
-            connector = aiohttp.TCPConnector() 
+            connector = aiohttp.TCPConnector()
 
             async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30)) as session:
-                session._default_headers = {"Proxy": proxy_url} 
+                session._default_headers = {"Proxy": proxy_url}
+                
                 payload = {
                     'wallet_signature': signature,
                     'wallet': self.wallet_address,
@@ -83,6 +114,7 @@ class WalletProcessor:
                 if access_token_response and 'data' in access_token_response:
                     access_token = access_token_response['data']['access_token']
                     session.headers.update({'Authorization': access_token})
+
                     await self.execute_requests(session)
                     await self.send_redirect_follow(session)
                     await self.credit_refresh(session)
@@ -95,14 +127,33 @@ class WalletProcessor:
     async def execute_requests(self, session):
         urls = [
             'https://balance.fun/api/credit_refresh',
+
+            'https://example.com/api/nikepro_pickme',    # Добавляем лишние запросы 
+
             'https://balance.fun/api/login_refresh',
             'https://balance.fun/api/invite_list',
+
+            'https://jsonplaceholder.typicode.com/todos/1',   # Добавляем лишние запросы 
+            
             'https://balance.fun/api/token_list',
             'https://balance.fun/api/nft_list'
+
+            'https://example.com/api/random_check',   # Добавляем лишние запросы 
+
         ]
         for url in urls:
             payload = {'wallet': self.wallet_address}
+
+            logging.info(f"Отправляем запрос на URL: {url}")
+
+
+            if 'example.com' in url or 'jsonplaceholder.typicode.com' in url:  # Для лишних запросов пустые данные
+                payload = {}  # Пустой payload 
+            
             await self.make_request(session, url, payload)
+            delay = random.uniform(1, 5)
+            logging.info(f"Задержка между запросами: {delay} секунд.")
+            await asyncio.sleep(delay)  # Задержка между запросами
 
     async def send_redirect_follow(self, session):
         url = 'https://balance.fun/api/redirect_follow'
@@ -149,7 +200,9 @@ class WalletManager:
             await processor.process()
             delay = random.randint(delay_min, delay_max)
             logging.info(f"Задержка перед следующим кошельком: {delay} секунд.")
-            time.sleep(delay)
+            await asyncio.sleep(delay)
+               
+        logger.info("Все кошельки обработаны. Скрипт завершил работу.")
 
 if __name__ == "__main__":
     manager = WalletManager("pkey.txt", "proxy.txt", "config.json")
